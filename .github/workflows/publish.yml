@@ -1,0 +1,86 @@
+# Publishes content: every change on main goes to staging automatically,
+# production only after a reviewer approves the "production" environment.
+
+name: publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# a newer change replaces an older one that is still waiting for approval
+concurrency:
+  group: publish
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: check that the website builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: check out the website
+        uses: actions/checkout@v7
+        with:
+          repository: gendercomics/website
+
+      - name: check out content
+        uses: actions/checkout@v7
+        with:
+          path: .content
+
+      - name: set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: set up node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: generate website
+        run: pnpm run generate-website
+
+  deploy_staging:
+    name: deploy to staging
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://stage.gendercomics.net
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: build & deploy stage
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+        run: bash .github/scripts/dispatch-and-wait.sh docker-image-stage.yml main "$GITHUB_SHA"
+
+  deploy_production:
+    name: deploy to production
+    needs: deploy_staging
+    runs-on: ubuntu-latest
+    # waits here until a required reviewer approves (repo settings → environments → production)
+    environment:
+      name: production
+      url: https://gendercomics.net
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # "production" always points at the last approved content; website code releases build with it
+      - name: mark content as released
+        run: git push origin "$GITHUB_SHA:refs/heads/production"
+
+      - name: build & deploy production
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DEPLOY_TOKEN }}
+        run: |
+          release=$(gh release view --repo gendercomics/website --json tagName -q .tagName)
+          bash .github/scripts/dispatch-and-wait.sh docker-image-production.yml "$release" "$GITHUB_SHA"
