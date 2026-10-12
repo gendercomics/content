@@ -72,7 +72,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # full history, so git can verify the push to "production" is a fast-forward
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # "production" always points at the last approved content; website code releases build with it
       - name: mark content as released
